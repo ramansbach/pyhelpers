@@ -7,6 +7,7 @@ Code to measure angular displacement wrt one of the planes
 (default should be XZ because of usually doing flow that way)
 """
 import imp,numpy as np,os
+#from quaternions import Quaternion
 from mpl_toolkits.mplot3d import Axes3D
 from scipy import stats
 import matplotlib.pyplot as plt
@@ -42,8 +43,10 @@ def angDisp(xi,n,p):
 
 #at a particular time, get the angle of the cluster or peptide's principal
 #component of gyration with the p axis in the plane normal to n    
-def getPhi(t,xtc,tpr,outgro,n,p,rm=True):
+def getPhi(t,xtc,tpr,outgro,n,p,ats,cutoff,rm=True):
     (peps,box_length) = mk.getPosB(t,xtc,tpr,outgro)
+    #assume one cluster, but it MAY have broken over PBCs so
+    peps = mk.fixPBC(peps,box_length,ats,cutoff)
     if rm:
         os.system('rm '+outgro)
     gyrationTensor = mk.gyrTens(peps,box_length)
@@ -51,13 +54,54 @@ def getPhi(t,xtc,tpr,outgro,n,p,rm=True):
     eigOrder = np.argsort(eigstuff[0])
     xi1 = eigstuff[1][:,eigOrder[2]]
     (phi,pxi) = angDisp(xi1,n,p)    
-    '''   
+       
     #Visualization Check
+   
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     peps3 = np.reshape(peps,[len(peps)/3,3])    
     ax.scatter(peps3[:,0],peps3[:,1],peps3[:,2])
-    comapprox = (1./29.)*np.sum(peps3,0)
+    comapprox = (1./(6*29.))*np.sum(peps3,0)
+
+    ax.quiver(comapprox[0]+xi1[0],comapprox[1]+xi1[1],comapprox[2]+xi1[2],xi1[0],xi1[1],xi1[2],color='m')
+    ax.quiver(comapprox[0]+xi1[0],0,comapprox[2]+xi1[2],xi1[0],0,xi1[2],color='r')
+    ax.quiver(comapprox[0]+p[0],0+p[1],comapprox[2]+p[2],p[0],p[1],p[2],color='b')
+    ax.set_xlabel('X Label')
+    ax.set_ylabel('Y Label')    
+    ax.set_zlabel('Z Label')
+    plt.show()
+    
+    
+    return (phi,pxi)
+    
+#same as getPhi, except takes the COM of the peptides as the locations of 
+#the body to take the gyration tensor of
+def getPhiCOM(t,xtc,tpr,outgro,n,p,ats,cutoff,masslist,rm=True):
+    (peps,box_length) = mk.getPosB(t,xtc,tpr,outgro)
+    #assume one cluster, but it MAY have broken over PBCs so
+    peps = mk.fixPBC(peps,box_length,ats,cutoff)
+    pepcoms = mk.getCOMs(peps,masslist,ats)
+    if rm:
+        os.system('rm '+outgro)
+    gyrationTensor = mk.gyrTens(pepcoms,box_length)
+    #print t
+    #print gyrationTensor
+    try:
+        eigstuff = np.linalg.eig(gyrationTensor)
+    except np.linalg.LinAlgError:
+        temp =1
+        print "this failed at",t
+    eigOrder = np.argsort(eigstuff[0])
+    xi1 = eigstuff[1][:,eigOrder[2]]
+    (phi,pxi) = angDisp(xi1,n,p)    
+    '''   
+    #Visualization Check
+   
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    peps3 = np.reshape(peps,[len(peps)/3,3])    
+    ax.scatter(peps3[:,0],peps3[:,1],peps3[:,2])
+    comapprox = (1./(6*29.))*np.sum(peps3,0)
 
     ax.quiver(comapprox[0]+xi1[0],comapprox[1]+xi1[1],comapprox[2]+xi1[2],xi1[0],xi1[1],xi1[2],color='m')
     ax.quiver(comapprox[0]+xi1[0],0,comapprox[2]+xi1[2],xi1[0],0,xi1[2],color='r')
@@ -67,6 +111,7 @@ def getPhi(t,xtc,tpr,outgro,n,p,rm=True):
     ax.set_zlabel('Z Label')
     plt.show()
     '''
+    
     return (phi,pxi)
 
 def angMSD(dt,phis,dss):
@@ -79,16 +124,18 @@ def angMSD(dt,phis,dss):
         dphis2 = np.zeros(len(phis)-ds)
         k = 0
         for i in range(ds):
-            dphi2 = np.diff(phis[i:len(phis):ds]**2)
+            dphi2 = np.diff(phis[i:len(phis):ds])**2
 
             dphis2[k:k+len(dphi2)] = dphi2
             
             k+=len(dphi2)
         mdphis2[s] = np.mean(dphis2)
-        sdphis2[s] = np.std(dphis2)/np.sqrt(len(dphis2))
+        #sdphis2[s] = np.std(dphis2)/np.sqrt(len(dphis2))
+        sdphis2[s] = np.std(dphis2)        
         s+=1
     fig = plt.figure()
     plt.errorbar(dt*dss,mdphis2,yerr=sdphis2)
+    plt.plot(dt*dss,mdphis2,color='g',lw=3)
     plt.show()
     return(dss,mdphis2,sdphis2)
     
@@ -100,11 +147,13 @@ def getDr(dts,dphis,sdphis,savename):
     e = float(linr[1])
     bi = list(dts < b).index(False)
     be = list(dts > e).index(True)
-    lss = np.linalg.lstsq(np.transpose([dts[bi:be]]),np.transpose([dphis[bi:be]]))
-    s = lss[0][0][0]    
+    #lss = np.linalg.lstsq(np.transpose([dts[bi:be]]),np.transpose([dphis[bi:be]]))
+    slope, intercept, r_value, p_value, std_err = stats.linregress(dts[bi:be],dphis[bi:be])    
+    s = slope
     fig = plt.figure()
-    plt.errorbar(dts,dphis,yerr=sdphis,lw=2,marker='.')
-    plt.plot(dts,s*dts,color='r',lw=2,ls='--')
+    plt.errorbar(dts,dphis,yerr=sdphis,marker='.')
+    plt.plot(dts,dphis,color='g',lw=3)
+    plt.plot(dts[bi:be],s*dts[bi:be]+intercept,color='r',lw=3,ls='--')
     plt.show()
     plt.savefig(savename)
     Dr = s/2.
@@ -124,6 +173,8 @@ if __name__ == "__main__":
     dt = 0.64*10
     nsteps = 100
     printmod = 10
+    ats = 29
+    cutoff = 0.5
     tf = dt*nsteps#dt*5
     tlist = np.arange(t0+dt,tf+dt,dt)
     xtc = folder+'md_whole.xtc'
@@ -135,7 +186,7 @@ if __name__ == "__main__":
     outfname = outfolder+'phivt.dat'
     outf = open(outfname,'w')
     phis = np.zeros(1+len(tlist))
-    (phi,pxi) = getPhi(t0,xtc,tpr,folder+'temp.gro',n,p,True)
+    (phi,pxi) = getPhi(t0,xtc,tpr,folder+'temp.gro',n,p,ats,cutoff,True)
     phis[0] = phi
     #print phi
     pind = 1
@@ -143,7 +194,7 @@ if __name__ == "__main__":
     for t in tlist:
         if not(pind % printmod):
             print pind
-        (dphi,pxi) = getPhi(t,xtc,tpr,folder+'temp.gro',n,pxi,True)
+        (dphi,pxi) = getPhi(t,xtc,tpr,folder+'temp.gro',n,pxi,ats,cutoff,True)
         #print dphi
         phi += dphi
         phis[pind] = phi
@@ -152,3 +203,4 @@ if __name__ == "__main__":
     outf.close()
     (dss,mdphis2,sdphis2) = angMSD(dt,phis,np.arange(1,nsteps))
     Dr = getDr(dt*dss,mdphis2,sdphis2,outfolder+'Drfit.png')
+    print "Dr is %e 1/ps = %e 1/s" % (Dr,Dr*10**12)
